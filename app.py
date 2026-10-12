@@ -35,8 +35,10 @@ with st.sidebar.expander("Spend controls", expanded=False):
 
 ingest.seed_cache_from_first_call()
 ingest.log_setup_spend(con)
-DEFAULTS = [("Notion", "825120160874613"), ("ChatGPT", "616148004918000"),
-            ("Claude", "989603317562933"), ("Perplexity AI", "109760398882363")]
+# Notion is left out on purpose: its cache is still seeded (ingest.SEED) and searchable, but every
+# one of its ads lands in a single theme, which makes a poor opening view. Search for it to track it.
+DEFAULTS = [("ChatGPT", "616148004918000"), ("Claude", "989603317562933"),
+            ("Perplexity AI", "109760398882363")]
 if not con.execute("SELECT 1 FROM competitors WHERE page_id IS NOT NULL").fetchone():
     for n, pid in DEFAULTS:                           # first run only; after that the user's picks win
         db.upsert_competitor(con, n, page_id=pid)
