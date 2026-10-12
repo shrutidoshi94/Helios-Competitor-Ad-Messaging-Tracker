@@ -185,11 +185,12 @@ def test_eval_export_is_blind_and_score_joins_db_tags(tmp_path):
     assert set(rows[0]) == {"ad_id", "brand", "text", "true_theme", "true_audience"}   # no model tags leak into the sheet
     assert {r["brand"] for r in rows} == {"A", "B"}                                 # spread across brands
     for r in rows:
-        r["true_theme"], r["true_audience"] = "urgency", "general"
+        r["true_theme"], r["true_audience"] = "price", "general"
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
     res = evaluate.score(path, con)
-    assert res["theme"]["n"] == 8 and res["theme"]["overall"] == 1.0          # heuristic tags these as urgency
+    # "40% off" and "Limited" tie this text between price and urgency; price wins on _KW order
+    assert res["theme"]["n"] == 8 and res["theme"]["overall"] == 1.0
     rows[0]["true_theme"] = "pricee"
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=list(rows[0])); w.writeheader(); w.writerows(rows)
@@ -206,3 +207,52 @@ def test_failed_classifier_call_does_not_crash_and_is_retried(con):
             raise RuntimeError("rate limited")
     assert classify.classify_new_ads(con, Flaky()) == (0, 1)
     assert classify.classify_new_ads(con, classify.HeuristicClassifier()) == (1, 0)     # untagged ad is picked up next time
+
+
+class _Fake:
+    """Stand-in for a second backend, so the upgrade path can be tested without an API key."""
+    name = "jev"
+
+    def __init__(self, fail=False):
+        self.fail = fail
+
+    def classify(self, text, title=""):
+        if self.fail:
+            raise RuntimeError("rate limited")
+        return classify.Tag("trust", 0.95, {"trust": 0.95}, "enterprise", 0.9, 0.8, 0.9, self.name)
+
+
+def _seed_two_ads(con):
+    cid = db.upsert_competitor(con, "X")
+    db.upsert_ad(con, cid, "meta", "1", "Save 20% today on shoes", "", "", "2026-01-01", "2026-12-31", True, {})
+    db.upsert_ad(con, cid, "meta", "2", "Limited time: 40% off ends Friday", "", "", "2026-01-01", "2026-12-31", True, {})
+    db.upsert_ad(con, cid, "meta", "3", "", "", "", "2026-01-01", "2026-12-31", True, {})   # too short -> skipped
+    return cid
+
+
+def test_retag_upgrades_old_tags_to_the_new_classifier(con):
+    _seed_two_ads(con)
+    assert classify.classify_new_ads(con, classify.HeuristicClassifier()) == (3, 0)
+    assert len(classify.stale_tags(con, _Fake())) == 2        # the skipped ad is not worth a paid call
+    assert classify.retag_stale(con, _Fake()) == (2, 0)
+    rows = {r["ad_id"]: r for r in con.execute("SELECT * FROM ad_tags")}
+    assert {r["classifier"] for r in rows.values()} == {"jev", "skipped"}
+    assert rows[1]["theme"] == "trust" and rows[1]["needs_review"] == 0   # new tag replaced the old one
+    assert classify.stale_tags(con, _Fake()) == []            # nothing left to upgrade
+    assert classify.retag_stale(con, _Fake()) == (0, 0)       # ...so a second run bills nothing
+
+
+def test_retag_keeps_the_old_tag_when_the_new_call_fails(con):
+    _seed_two_ads(con)
+    classify.classify_new_ads(con, classify.HeuristicClassifier())
+    assert classify.retag_stale(con, _Fake(fail=True)) == (0, 2)
+    rows = con.execute("SELECT classifier FROM ad_tags WHERE classifier != 'skipped'").fetchall()
+    assert {r["classifier"] for r in rows} == {"heuristic"}    # old tags survive a failed upgrade
+    assert len(classify.stale_tags(con, _Fake())) == 2         # and stay queued for the next attempt
+
+
+def test_retag_respects_a_limit(con):
+    _seed_two_ads(con)
+    classify.classify_new_ads(con, classify.HeuristicClassifier())
+    assert classify.retag_stale(con, _Fake(), limit=1) == (1, 0)
+    assert len(classify.stale_tags(con, _Fake())) == 1

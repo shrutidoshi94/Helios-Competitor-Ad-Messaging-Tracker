@@ -23,6 +23,15 @@ with st.sidebar.expander("Spend controls", expanded=False):
                              help="Off: only saved data is used and nothing is billed.")
     budget = st.number_input("Budget cap per action ($)", 0.0, 5.0, 0.05, 0.005, format="%.3f")
     st.caption(f"Classifier: {clf.name}")
+    n_stale = len(classify.stale_tags(con, clf))
+    if n_stale:                                       # tags left over from a previously active classifier
+        st.caption(f"{n_stale} ads are still tagged by an older classifier.")
+        if st.button(f"Re-tag {n_stale} ads with {clf.name}", use_container_width=True,
+                     help="One classifier call per ad. Only needed after switching classifier."):
+            with st.spinner(f"Re-tagging {n_stale} ads with {clf.name}..."):
+                done, bad = classify.retag_stale(con, clf)
+            st.success(f"Re-tagged {done} ads." + (f" {bad} failed and keep their old tag." if bad else ""))
+            st.rerun()
 
 ingest.seed_cache_from_first_call()
 ingest.log_setup_spend(con)

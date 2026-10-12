@@ -160,12 +160,10 @@ def get_classifier(prefer_jev=True):
     return HeuristicClassifier()
 
 
-def classify_new_ads(con, clf):
-    """Tag every ad that has no tag yet (idempotent — never re-tags, never re-bills).
-    A failed call (rate limit, network) leaves that ad untagged so the next run retries it.
+def _tag_rows(con, clf, rows):
+    """Classify each row and store the tag. Committed per ad so a crash part-way keeps
+    the calls already paid for. A failing ad is left alone and retried next time.
     Returns (tagged, failed)."""
-    rows = con.execute("SELECT a.id,a.text,a.title FROM ads a LEFT JOIN ad_tags t ON t.ad_id=a.id "
-                       "WHERE t.ad_id IS NULL").fetchall()
     tagged = failed = 0
     for r in rows:
         try:
@@ -173,10 +171,36 @@ def classify_new_ads(con, clf):
         except Exception:
             failed += 1
             continue
-        con.execute("INSERT INTO ad_tags VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        con.execute("INSERT OR REPLACE INTO ad_tags VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (r["id"], t.theme, t.theme_prob, t.audience, t.audience_prob, t.claim_verifiable_prob,
                      t.confidence, int(t.needs_review), int(t.analyzable), t.classifier,
                      json.dumps(t.theme_probs)))
+        con.commit()
         tagged += 1
-    con.commit()
     return tagged, failed
+
+
+def classify_new_ads(con, clf):
+    """Tag every ad that has no tag yet (idempotent — never re-tags, never re-bills).
+    A failed call (rate limit, network) leaves that ad untagged so the next run retries it.
+    Returns (tagged, failed)."""
+    rows = con.execute("SELECT a.id,a.text,a.title FROM ads a LEFT JOIN ad_tags t ON t.ad_id=a.id "
+                       "WHERE t.ad_id IS NULL").fetchall()
+    return _tag_rows(con, clf, rows)
+
+
+def stale_tags(con, clf):
+    """Ads whose stored tag came from a different backend than `clf` — what you have
+    after adding an OPENROUTER_API_KEY to a database already tagged by the baseline.
+    Ads marked 'skipped' are excluded: both backends skip the same too-short ads."""
+    return con.execute(
+        """SELECT a.id, a.text, a.title FROM ads a JOIN ad_tags t ON t.ad_id=a.id
+           WHERE t.classifier NOT IN (?, 'skipped') ORDER BY a.id""", (clf.name,)).fetchall()
+
+
+def retag_stale(con, clf, limit=None):
+    """Re-tag the ads `stale_tags` finds, upgrading them to `clf`. Costs one classifier
+    call per ad, so this is opt-in rather than part of the normal refresh. An ad keeps
+    its old tag until the new one succeeds. Returns (tagged, failed)."""
+    rows = stale_tags(con, clf)
+    return _tag_rows(con, clf, rows[:limit] if limit else rows)
