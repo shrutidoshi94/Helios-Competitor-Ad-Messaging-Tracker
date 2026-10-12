@@ -2,6 +2,8 @@
 
 # Competitor Ad & Messaging Tracker
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://helios-competitor-ad-messaging-tracker-7pdnjkdzmqftzmgz3xhkcj.streamlit.app/)
+
 Helios watches what your competitors are saying in their paid ads. It pulls live creatives from the
 Meta and LinkedIn ad libraries, tags every ad with a **theme**, an **audience** and a
 **claim-verifiability score** (each with a probability attached), diffs the mix week over week, and
@@ -9,6 +11,11 @@ writes a one-page brief on what changed and how to respond.
 
 Paid data is metered: every API response is cached on disk, live calls are off by default, and each
 run refuses to spend past a cap you set in the sidebar.
+
+The [hosted demo](https://helios-competitor-ad-messaging-tracker-7pdnjkdzmqftzmgz3xhkcj.streamlit.app/)
+replays the committed response cache and is read-only: it has no API key and no `glasser` CLI, so it
+classifies with the keyword baseline and cannot fetch or bill anything. Run it locally for Jev tags
+and live pulls.
 
 ## Quickstart
 
